@@ -9,19 +9,16 @@
 #include <cstring>
 #include <iostream>
 
-// Secure Key Expansion using HKDF with BLAKE2b
 std::array<std::vector<uint8_t>, 3> deriveKeysHKDF(const std::string &password, const std::vector<uint8_t> &salt)
 {
     std::array<std::vector<uint8_t>, 3> keys;
 
-    // Ensure correct key allocation
     for (int i = 0; i < 3; ++i)
     {
         keys[i].resize(crypto_stream_xchacha20_KEYBYTES);
     }
 
-    // Step 1: Extract Phase (PRK)
-    std::vector<uint8_t> prk(64); // 64 bytes for BLAKE2b-512
+    std::vector<uint8_t> prk(64);
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
     if (!pctx)
     {
@@ -45,7 +42,6 @@ std::array<std::vector<uint8_t>, 3> deriveKeysHKDF(const std::string &password, 
     }
     EVP_PKEY_CTX_free(pctx);
 
-    // Step 2: Expand Phase (Generate 3 keys)
     for (int i = 0; i < 3; ++i)
     {
         std::vector<uint8_t> info = {'K', 'E', 'Y', static_cast<uint8_t>(i)};
@@ -77,7 +73,6 @@ std::array<std::vector<uint8_t>, 3> deriveKeysHKDF(const std::string &password, 
     return keys;
 }
 
-// Generate HMAC (SHA-256)
 std::vector<uint8_t> generateHMAC(const std::vector<uint8_t> &data, const std::vector<uint8_t> &key)
 {
     std::array<uint8_t, SHA256_DIGEST_LENGTH> hmac;
@@ -89,7 +84,6 @@ std::vector<uint8_t> generateHMAC(const std::vector<uint8_t> &data, const std::v
     return std::vector<uint8_t>(hmac.begin(), hmac.begin() + len);
 }
 
-// Deimos Cipher Encryption
 std::vector<uint8_t> deimosCipherEncrypt(const std::string &plaintext, const std::string &password)
 {
     std::vector<uint8_t> salt(32);
@@ -126,7 +120,6 @@ std::vector<uint8_t> deimosCipherEncrypt(const std::string &plaintext, const std
     return ciphertext;
 }
 
-// Deimos Cipher Decryption
 std::string deimosCipherDecrypt(const std::vector<uint8_t> &ciphertext, const std::string &password)
 {
     if (ciphertext.size() < 32 + crypto_stream_xchacha20_NONCEBYTES + SHA256_DIGEST_LENGTH)

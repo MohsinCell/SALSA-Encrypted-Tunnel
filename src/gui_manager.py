@@ -1,861 +1,885 @@
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-import threading
-import subprocess
-import psutil
-import time
+import logging
 import os
-from datetime import datetime
 import queue
+import threading
+import time
+import tkinter as tk
+from datetime import datetime
+from tkinter import filedialog, ttk
+from typing import Any, Dict, List, Optional
+
+from config import SalsaConfig
+from socks_proxy import SOCKSProxy
+from vpn_client import VPNClient
+from vpn_server import VPNServer
+
+logger = logging.getLogger(__name__)
+
+BG = "#1a1a2e"
+CARD = "#16213e"
+ACCENT = "#0f3460"
+HIGHLIGHT = "#e94560"
+TEXT = "#e0e0e0"
+TEXT_DIM = "#8899aa"
+GREEN = "#00d26a"
+ORANGE = "#ff9f1c"
+RED = "#e94560"
+BLUE = "#4da6ff"
+FONT_SANS = ("Segoe UI", 10)
+FONT_SANS_BOLD = ("Segoe UI", 10, "bold")
+FONT_SANS_LG = ("Segoe UI", 14, "bold")
+FONT_SANS_XL = ("Segoe UI", 20, "bold")
+FONT_MONO = ("Consolas", 9)
+FONT_MONO_SM = ("Consolas", 8)
 
 class VPNGUIManager:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Salsa - Encryption Tunnel")
-        self.root.geometry("1000x700")
-        self.root.configure(bg="#2c3e50")
+        self.root.title("Salsa - Encrypted Tunnel")
+        self.root.geometry("1100x750")
+        self.root.configure(bg=BG)
+        self.root.minsize(900, 600)
 
-        # Get the folder where the script is located
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # Construct the full path to your image
-        icon_path = os.path.join(script_dir, "SALSA.png")
-
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SALSA.png")
         try:
             self.icon = tk.PhotoImage(file=icon_path)
             self.root.iconphoto(True, self.icon)
-            print("Icon set successfully!")
-        except Exception as e:
-            print(f"Could not set icon: {e}")
-        
-        # Process tracking
-        self.server_process = None
-        self.client_process = None
-        self.monitoring_thread = None
-        self.monitoring_active = False
-        
-        # Data queues for thread-safe updates
-        self.log_queue = queue.Queue()
-        self.stats_queue = queue.Queue()
-        
-        # Statistics
-        self.stats = {
-            'bytes_sent': 0,
-            'bytes_received': 0,
-            'packets_sent': 0,
-            'packets_received': 0,
-            'connections': 0,
-            'uptime': 0
-        }
-        
-        self.setup_ui()
-        self.start_time = None
-        
-        # Start GUI update loop
-        self.update_gui()
-    
-    def setup_ui(self):
-        # Main container
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Configure style
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Notebook for tabs
-        notebook = ttk.Notebook(main_frame)
-        notebook.pack(fill=tk.BOTH, expand=True)
-        
-        # Server Tab
-        self.server_frame = ttk.Frame(notebook)
-        notebook.add(self.server_frame, text="Server Control")
-        self.setup_server_tab()
-        
-        # Client Tab
-        self.client_frame = ttk.Frame(notebook)
-        notebook.add(self.client_frame, text="Client Control")
-        self.setup_client_tab()
-        
-        # Monitoring Tab
-        self.monitor_frame = ttk.Frame(notebook)
-        notebook.add(self.monitor_frame, text="Traffic Monitor")
-        self.setup_monitor_tab()
-        
-        # Logs Tab
-        self.logs_frame = ttk.Frame(notebook)
-        notebook.add(self.logs_frame, text="Logs")
-        self.setup_logs_tab()
-    
-    def setup_server_tab(self):
-        # Server configuration
-        config_frame = ttk.LabelFrame(self.server_frame, text="Server Configuration", padding=10)
-        config_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(config_frame, text="Server IP:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.server_ip = ttk.Entry(config_frame, width=15)
-        self.server_ip.insert(0, "127.0.0.1")
-        self.server_ip.grid(row=0, column=1, padx=5)
-        
-        ttk.Label(config_frame, text="Port:").grid(row=0, column=2, sticky=tk.W, padx=5)
-        self.server_port = ttk.Entry(config_frame, width=10)
-        self.server_port.insert(0, "8080")
-        self.server_port.grid(row=0, column=3, padx=5)
-        
-        ttk.Label(config_frame, text="Max Clients:").grid(row=1, column=0, sticky=tk.W, padx=5)
-        self.max_clients = ttk.Entry(config_frame, width=10)
-        self.max_clients.insert(0, "10")
-        self.max_clients.grid(row=1, column=1, padx=5)
-        
-        # Server controls
-        control_frame = ttk.LabelFrame(self.server_frame, text="Server Control", padding=10)
-        control_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.start_server_btn = ttk.Button(control_frame, text="Start Server", 
-                                          command=self.start_server, style="Accent.TButton")
-        self.start_server_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.stop_server_btn = ttk.Button(control_frame, text="Stop Server", 
-                                         command=self.stop_server, state=tk.DISABLED)
-        self.stop_server_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.server_status_label = ttk.Label(control_frame, text="Status: Stopped", 
-                                           foreground="red")
-        self.server_status_label.pack(side=tk.LEFT, padx=20)
-        
-        # Server statistics
-        stats_frame = ttk.LabelFrame(self.server_frame, text="Server Statistics", padding=10)
-        stats_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.server_stats_text = scrolledtext.ScrolledText(stats_frame, height=15, 
-                                                          state=tk.DISABLED, wrap=tk.WORD)
-        self.server_stats_text.pack(fill=tk.BOTH, expand=True)
-    
-    def setup_client_tab(self):
-        # Client configuration
-        config_frame = ttk.LabelFrame(self.client_frame, text="Client Configuration", padding=10)
-        config_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(config_frame, text="Server IP:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.client_server_ip = ttk.Entry(config_frame, width=15)
-        self.client_server_ip.insert(0, "127.0.0.1")
-        self.client_server_ip.grid(row=0, column=1, padx=5)
-        
-        ttk.Label(config_frame, text="Port:").grid(row=0, column=2, sticky=tk.W, padx=5)
-        self.client_port = ttk.Entry(config_frame, width=10)
-        self.client_port.insert(0, "8080")
-        self.client_port.grid(row=0, column=3, padx=5)
-        
-        ttk.Label(config_frame, text="Client ID:").grid(row=1, column=0, sticky=tk.W, padx=5)
-        self.client_id = ttk.Entry(config_frame, width=15)
-        self.client_id.insert(0, f"client_{int(time.time())}")
-        self.client_id.grid(row=1, column=1, padx=5)
-        
-        # Add authentication section
-        auth_frame = ttk.LabelFrame(config_frame, text="Authentication")
-        auth_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), padx=5, pady=5)
-        
-        ttk.Label(auth_frame, text="Username:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.client_username = ttk.Entry(auth_frame, width=15)
-        self.client_username.insert(0, "testuser")
-        self.client_username.grid(row=0, column=1, padx=5)
-        
-        ttk.Label(auth_frame, text="Password:").grid(row=0, column=2, sticky=tk.W, padx=5)
-        self.client_password = ttk.Entry(auth_frame, width=15, show="*")
-        self.client_password.insert(0, "testpass")
-        self.client_password.grid(row=0, column=3, padx=5)
-        
-        # Client controls
-        control_frame = ttk.LabelFrame(self.client_frame, text="Client Control", padding=10)
-        control_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.connect_btn = ttk.Button(control_frame, text="Connect", 
-                                     command=self.connect_client, style="Accent.TButton")
-        self.connect_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.disconnect_btn = ttk.Button(control_frame, text="Disconnect", 
-                                        command=self.disconnect_client, state=tk.DISABLED)
-        self.disconnect_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.client_status_label = ttk.Label(control_frame, text="Status: Disconnected", 
-                                           foreground="red")
-        self.client_status_label.pack(side=tk.LEFT, padx=20)
-        
-        # Client connection info
-        info_frame = ttk.LabelFrame(self.client_frame, text="Connection Info", padding=10)
-        info_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.client_info_text = scrolledtext.ScrolledText(info_frame, height=15, 
-                                                         state=tk.DISABLED, wrap=tk.WORD)
-        self.client_info_text.pack(fill=tk.BOTH, expand=True)
-    
-    def setup_monitor_tab(self):
-        # Monitor controls
-        control_frame = ttk.Frame(self.monitor_frame)
-        control_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.start_monitor_btn = ttk.Button(control_frame, text="Start Monitoring", 
-                                           command=self.start_monitoring)
-        self.start_monitor_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.stop_monitor_btn = ttk.Button(control_frame, text="Stop Monitoring", 
-                                          command=self.stop_monitoring, state=tk.DISABLED)
-        self.stop_monitor_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.clear_monitor_btn = ttk.Button(control_frame, text="Clear", 
-                                           command=self.clear_monitor)
-        self.clear_monitor_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Enhanced statistics display with tunnel-specific metrics
-        stats_frame = ttk.LabelFrame(self.monitor_frame, text="Network & Tunnel Statistics", padding=10)
-        stats_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        stats_grid = ttk.Frame(stats_frame)
-        stats_grid.pack(fill=tk.X)
-        
-        # Create enhanced statistics labels
-        self.stats_labels = {}
-        stats_items = [
-            ("Bytes Sent:", "bytes_sent"), ("Bytes Received:", "bytes_received"),
-            ("Packets Sent:", "packets_sent"), ("Packets Received:", "packets_received"),
-            ("Tunnel State:", "tunnel_state"), ("Encryption Time:", "encryption_time"),
-            ("Decryption Time:", "decryption_time"), ("Active Connections:", "connections"),
-            ("Injected Packets:", "injected_packets"), ("Uptime:", "uptime")
-        ]
-        
-        for i, (label, key) in enumerate(stats_items):
-            row = i // 2
-            col = (i % 2) * 2
-            ttk.Label(stats_grid, text=label).grid(row=row, column=col, sticky=tk.W, padx=5)
-            self.stats_labels[key] = ttk.Label(stats_grid, text="0", foreground="blue")
-            self.stats_labels[key].grid(row=row, column=col+1, sticky=tk.W, padx=5)
-        
-        # Packet capture display
-        capture_frame = ttk.LabelFrame(self.monitor_frame, text="Packet Capture", padding=10)
-        capture_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.packet_text = scrolledtext.ScrolledText(capture_frame, height=20, 
-                                                    state=tk.DISABLED, wrap=tk.WORD)
-        self.packet_text.pack(fill=tk.BOTH, expand=True)
-    
-    def setup_logs_tab(self):
-        # Log controls
-        control_frame = ttk.Frame(self.logs_frame)
-        control_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.clear_logs_btn = ttk.Button(control_frame, text="Clear Logs", 
-                                        command=self.clear_logs)
-        self.clear_logs_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.save_logs_btn = ttk.Button(control_frame, text="Save Logs", 
-                                       command=self.save_logs)
-        self.save_logs_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Log level filter
-        ttk.Label(control_frame, text="Log Level:").pack(side=tk.LEFT, padx=(20, 5))
-        self.log_level = ttk.Combobox(control_frame, values=["ALL", "INFO", "WARNING", "ERROR"], 
-                                     state="readonly", width=10)
-        self.log_level.set("ALL")
-        self.log_level.pack(side=tk.LEFT, padx=5)
-        
-        # Logs display
-        self.logs_text = scrolledtext.ScrolledText(self.logs_frame, height=25, 
-                                                  state=tk.DISABLED, wrap=tk.WORD)
-        self.logs_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-    
-    def log_message(self, message, level="INFO"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] [{level}] {message}\n"
-        self.log_queue.put((log_entry, level))
-    
-    def start_server(self):
-        try:
-            ip = self.server_ip.get()
-            port = int(self.server_port.get())
-            max_clients = int(self.max_clients.get())
-            server_script = f'''
-import sys
-import os
-
-# Add VPN src directory to path
-sys.path.insert(0, r"C:\\My Projects\\Salsa - Encrypted VPN Prototype\\src")
-
-# Import your VPNServer class
-try:
-    from vpn_server import VPNServer
-    
-    # Create server with GUI parameters
-    server = VPNServer(host="{ip}", port={port})
-    server.config["max_clients"] = {max_clients}
-    
-    print(f"Starting VPN Server on {{server.host}}:{{server.port}}")
-    print(f"Max clients: {{server.config['max_clients']}}")
-    print(f"DLL Path: {{server.dll_path}}")
-    
-    if server.start_server():
-        print("Server started successfully")
-        server.accept_connections()
-    else:
-        print("Failed to start server")
-        
-except Exception as e:
-    print(f"Server error: {{e}}")
-    import traceback
-    traceback.print_exc()
-'''
-            
-            # Write temporary server script
-            with open("temp_server.py", "w") as f:
-                f.write(server_script)
-            
-            # Start server process
-            self.server_process = subprocess.Popen(
-                ["python", "temp_server.py"], 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, 
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            self.start_server_btn.config(state=tk.DISABLED)
-            self.stop_server_btn.config(state=tk.NORMAL)
-            self.server_status_label.config(text="Status: Running", foreground="green")
-            
-            self.start_time = time.time()
-            self.log_message(f"Server started on {ip}:{port}")
-            
-            # Start monitoring thread
-            threading.Thread(target=self.monitor_server_process, daemon=True).start()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to start server: {str(e)}")
-            self.log_message(f"Server start failed: {str(e)}", "ERROR")
-    
-    def stop_server(self):
-        try:
-            if self.server_process:
-                self.server_process.terminate()
-                self.server_process.wait(timeout=5)
-                self.server_process = None
-            
-            # Auto-stop monitoring if no client is connected
-            if not (self.client_process and self.client_process.poll() is None):
-                if self.monitoring_active:
-                    self.stop_monitoring()
-            
-            # Clean up temporary file
-            try:
-                if os.path.exists("temp_server.py"):
-                    os.remove("temp_server.py")
-            except:
-                pass
-            
-            self.start_server_btn.config(state=tk.NORMAL)
-            self.stop_server_btn.config(state=tk.DISABLED)
-            self.server_status_label.config(text="Status: Stopped", foreground="red")
-            
-            self.log_message("VPN server stopped")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to stop server: {str(e)}")
-            self.log_message(f"Server stop failed: {str(e)}", "ERROR")
-    
-    def connect_client(self):
-        try:
-            ip = self.client_server_ip.get()
-            port = int(self.client_port.get())
-            client_id = self.client_id.get()
-            username = self.client_username.get()
-            password = self.client_password.get()
-            
-            # Validate inputs
-            if not username.strip():
-                messagebox.showerror("Error", "Username cannot be empty")
-                return
-            if not password.strip():
-                messagebox.showerror("Error", "Password cannot be empty")
-                return
-            
-            # Create a client script with proper indentation
-            client_script = f"""import sys
-import os
-import json
-
-# Add multiple possible paths to find the VPN modules
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-possible_paths = [
-    current_dir,
-    parent_dir,
-    os.path.join(parent_dir, 'src'),
-    os.path.join(current_dir, 'src'),
-    r"C:\\My Projects\\Salsa - Encrypted VPN Prototype",
-    r"C:\\My Projects\\Encrypted VPN Prototype"
-]
-
-for path in possible_paths:
-    if path not in sys.path:
-        sys.path.append(path)
-
-try:
-    from vpn_client import VPNClient
-    import time
-    
-    # Configuration from GUI
-    SERVER_IP = "{ip}"
-    SERVER_PORT = {port}
-    USERNAME = "{username}"
-    PASSWORD = "{password}"
-    CLIENT_ID = "{client_id}"
-    
-    print(f"Initializing VPN Client...")
-    print(f"Server: {{SERVER_IP}}:{{SERVER_PORT}}")
-    print(f"Username: {{USERNAME}}")
-    print(f"Client ID: {{CLIENT_ID}}")
-    print(f"Attempting authentication with provided credentials...")
-    
-    # Create VPN client instance
-    client = VPNClient(server_host=SERVER_IP, server_port=SERVER_PORT)
-    
-    # Attempt connection with actual credentials from GUI
-    print("Connecting to VPN server...")
-    print(f"DEBUG: Using username='{{USERNAME}}' password='{{PASSWORD}}'")
-    
-    connection_result = client.connect(USERNAME, PASSWORD)
-    
-    if connection_result:
-        print("VPN connection established successfully!")
-        print("Authentication successful!")
-        print("Status:", client.get_status())
-        
-        # Keep the connection alive and show status updates
-        status_counter = 0
-        while client.running and client.authenticated:
-            time.sleep(5)
-            status_counter += 1
-            
-            # Print status every 30 seconds (6 * 5 second intervals)
-            if status_counter % 6 == 0:
-                status = client.get_status()
-                print(f"Connection Status: {{status}}")
-                
-                # Show tunnel manager stats if available
-                if client.tunnel_manager:
-                    try:
-                        stats = client.tunnel_manager.get_stats()
-                        print(f"Tunnel Stats - Packets sent: {{stats['packets_sent']}}, received: {{stats['packets_received']}}")
-                        print(f"Tunnel State: {{stats['state']}}")
-                    except:
-                        print("Tunnel stats not available")
-            
-            # Check if connection is still alive
-            if not client.running:
-                print("Connection lost")
-                break
-                
-    else:
-        print("AUTHENTICATION FAILED - Invalid username or password")
-        print(f"Failed credentials: username='{{USERNAME}}' password='{{PASSWORD}}'")
-        print("Please check your credentials and try again")
-        
-except ImportError as e:
-    print(f"Import error - make sure vpn_client.py is in the same directory: {{e}}")
-    sys.exit(1)
-except Exception as e:
-    print(f"Client error: {{e}}")
-    import traceback
-    traceback.print_exc()
-finally:
-    try:
-        if 'client' in locals() and hasattr(client, 'disconnect'):
-            print("Disconnecting VPN client...")
-            client.disconnect()
-    except Exception as cleanup_error:
-        print(f"Cleanup error: {{cleanup_error}}")
-"""
-            
-            # Write temporary client script
-            with open("temp_client.py", "w") as f:
-                f.write(client_script)
-            
-            # Start client process
-            self.client_process = subprocess.Popen(
-                ["python", "temp_client.py"], 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, 
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            self.connect_btn.config(state=tk.DISABLED)
-            self.disconnect_btn.config(state=tk.NORMAL)
-            self.client_status_label.config(text="Status: Connecting...", foreground="orange")
-            
-            self.log_message(f"Client connecting to {ip}:{port} with username: {username}")
-            
-            # Start monitoring thread
-            threading.Thread(target=self.monitor_client_process, daemon=True).start()
-            
-        except ValueError as e:
-            messagebox.showerror("Error", f"Invalid port number: {str(e)}")
-            self.log_message(f"Client connection failed: Invalid port", "ERROR")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to connect client: {str(e)}")
-            self.log_message(f"Client connection failed: {str(e)}", "ERROR")
-
-    def disconnect_client(self):
-        try:
-            if self.client_process:
-                self.client_process.terminate()
-                self.client_process.wait(timeout=5)
-                self.client_process = None
-            
-            # Auto-stop monitoring if no server is running
-            if not (self.server_process and self.server_process.poll() is None):
-                if self.monitoring_active:
-                    self.stop_monitoring()
-            
-            # Clean up temporary file
-            try:
-                if os.path.exists("temp_client.py"):
-                    os.remove("temp_client.py")
-            except:
-                pass
-            
-            self.connect_btn.config(state=tk.NORMAL)
-            self.disconnect_btn.config(state=tk.DISABLED)
-            self.client_status_label.config(text="Status: Disconnected", foreground="red")
-            
-            self.log_message("VPN client disconnected")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to disconnect client: {str(e)}")
-            self.log_message(f"Client disconnect failed: {str(e)}", "ERROR")
-    
-    def start_monitoring(self):
-        # Only allow monitoring if server or client is running
-        if not (self.server_process or self.client_process):
-            messagebox.showwarning("Warning", "Please start server or connect client before monitoring VPN traffic")
-            return
-        
-        self.monitoring_active = True
-        self.start_monitor_btn.config(state=tk.DISABLED)
-        self.stop_monitor_btn.config(state=tk.NORMAL)
-        
-        self.monitoring_thread = threading.Thread(target=self.monitor_network, daemon=True)
-        self.monitoring_thread.start()
-        
-        self.log_message("VPN traffic monitoring started")
-    
-    def stop_monitoring(self):
-        self.monitoring_active = False
-        self.start_monitor_btn.config(state=tk.NORMAL)
-        self.stop_monitor_btn.config(state=tk.DISABLED)
-        
-        self.log_message("VPN traffic monitoring stopped")
-    
-    def monitor_network(self):
-        """Monitor VPN-specific network traffic"""
-        last_stats = psutil.net_io_counters()
-        idle_cycles = 0
-        
-        while self.monitoring_active:
-            try:
-                # Check if VPN components are still running
-                vpn_active = (self.server_process and self.server_process.poll() is None) or \
-                            (self.client_process and self.client_process.poll() is None)
-                
-                if not vpn_active:
-                    idle_cycles += 1
-                    # Auto-stop monitoring after 30 seconds of no VPN activity
-                    if idle_cycles >= 30:
-                        self.log_message("No VPN activity detected. Stopping monitor.", "INFO")
-                        self.stop_monitoring()
-                        break
-                else:
-                    idle_cycles = 0
-                
-                current_stats = psutil.net_io_counters()
-                
-                # Only process traffic when VPN is active
-                if vpn_active:
-                    # Calculate differences
-                    bytes_sent_diff = current_stats.bytes_sent - last_stats.bytes_sent
-                    bytes_recv_diff = current_stats.bytes_recv - last_stats.bytes_recv
-                    packets_sent_diff = current_stats.packets_sent - last_stats.packets_sent
-                    packets_recv_diff = current_stats.packets_recv - last_stats.packets_recv
-                    
-                    # Update our stats only for VPN-related activity
-                    if bytes_sent_diff > 0 or bytes_recv_diff > 0:
-                        self.stats['bytes_sent'] += bytes_sent_diff
-                        self.stats['bytes_received'] += bytes_recv_diff
-                        self.stats['packets_sent'] += packets_sent_diff
-                        self.stats['packets_received'] += packets_recv_diff
-                        
-                        # Log VPN-specific packets
-                        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                        
-                        if bytes_sent_diff > 0:
-                            packet_type = self.classify_packet_type(bytes_sent_diff)
-                            packet_info = (f"{timestamp} - [VPN-OUT] {packet_type}: "
-                                        f"{bytes_sent_diff}B encrypted via tunnel")
-                            self.log_queue.put((packet_info + "\n", "PACKET"))
-                        
-                        if bytes_recv_diff > 0:
-                            packet_type = self.classify_packet_type(bytes_recv_diff)
-                            packet_info = (f"{timestamp} - [VPN-IN] {packet_type}: "
-                                        f"{bytes_recv_diff}B decrypted from tunnel")
-                            self.log_queue.put((packet_info + "\n", "PACKET"))
-                
-                last_stats = current_stats
-                
-                # Update VPN connection status
-                if vpn_active:
-                    self.stats['connections'] = 1 if (self.server_process and self.server_process.poll() is None) else \
-                                            1 if (self.client_process and self.client_process.poll() is None) else 0
-                    self.stats['tunnel_state'] = "CONNECTED"
-                else:
-                    self.stats['tunnel_state'] = "DISCONNECTED"
-                    self.stats['connections'] = 0
-                
-                # Update uptime only when VPN is active
-                if vpn_active and self.start_time:
-                    self.stats['uptime'] = int(time.time() - self.start_time)
-                
-                # Simulate tunnel-specific stats only when active
-                if vpn_active and (bytes_sent_diff > 0 or bytes_recv_diff > 0):
-                    self.stats['encryption_time'] = round(self.stats.get('encryption_time', 0) + 0.001, 3)
-                    self.stats['decryption_time'] = round(self.stats.get('decryption_time', 0) + 0.001, 3)
-                    self.stats['injected_packets'] = self.stats.get('injected_packets', 0) + 1
-                
-                time.sleep(1)
-                
-            except Exception as e:
-                self.log_message(f"VPN monitoring error: {str(e)}", "ERROR")
-                break
-    
-    def classify_packet_type(self, packet_size):
-        """Classify packet type based on size for better monitoring"""
-        if packet_size < 100:
-            return "Keepalive/Control"
-        elif packet_size < 500:
-            return "Tunnel Control"
-        elif packet_size < 1500:
-            return "Data Packet"
-        else:
-            return "Large Data/File Transfer"
-    
-    def monitor_server_process(self):
-        """Monitor server process output"""
-        if not self.server_process:
-            return
-            
-        while self.server_process.poll() is None:
-            try:
-                line = self.server_process.stdout.readline()
-                if line:
-                    self.log_queue.put((f"SERVER: {line}", "INFO"))
-            except Exception as e:
-                self.log_message(f"Server monitor error: {str(e)}", "ERROR")
-                break
-    
-    def monitor_client_process(self):
-        """Monitor client process output and handle authentication states"""
-        if not self.client_process:
-            return
-
-        connection_established = False
-        auth_failed = False
-
-        while self.client_process.poll() is None:
-            try:
-                line = self.client_process.stdout.readline()
-                if line:
-                    line_clean = line.strip()
-                    self.log_queue.put((f"CLIENT: {line}", "INFO"))
-
-                    # Check for authentication status
-                    if ("VPN connection established successfully" in line_clean or 
-                        "VPN client connected" in line_clean or 
-                        "Auth OK. Client ID:" in line_clean):
-                        connection_established = True
-                        self.client_status_label.config(text="Status: Connected", foreground="green")
-                        self.log_message("Client authentication successful")
-
-                    elif "AUTHENTICATION FAILED" in line_clean or "Auth failed" in line_clean:
-                        auth_failed = True
-                        self.client_status_label.config(text="Status: Authentication Failed", foreground="red")
-                        self.log_message("Client authentication failed - check credentials", "ERROR")
-
-                    elif "Failed to connect" in line_clean:
-                        self.client_status_label.config(text="Status: Connection Failed", foreground="red")
-                        self.log_message("Client connection failed", "ERROR")
-
-            except Exception as e:
-                self.log_message(f"Client monitor error: {str(e)}", "ERROR")
-                break
-
-        # Process has ended - check final state
-        if self.client_process.poll() is not None:
-            if auth_failed:
-                self.client_status_label.config(text="Status: Auth Failed", foreground="red")
-            elif not connection_established:
-                self.client_status_label.config(text="Status: Connection Failed", foreground="red")
-            else:
-                self.client_status_label.config(text="Status: Disconnected", foreground="red")
-
-            # Reset buttons
-            self.connect_btn.config(state=tk.NORMAL)
-            self.disconnect_btn.config(state=tk.DISABLED)
-    
-    def clear_monitor(self):
-        self.packet_text.config(state=tk.NORMAL)
-        self.packet_text.delete(1.0, tk.END)
-        self.packet_text.config(state=tk.DISABLED)
-        
-        # Reset statistics
-        self.stats = {k: 0 for k in self.stats}
-    
-    def clear_logs(self):
-        self.logs_text.config(state=tk.NORMAL)
-        self.logs_text.delete(1.0, tk.END)
-        self.logs_text.config(state=tk.DISABLED)
-    
-    def save_logs(self):
-        try:
-            from tkinter import filedialog
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".log",
-                filetypes=[("Log files", "*.log"), ("Text files", "*.txt")]
-            )
-            if filename:
-                content = self.logs_text.get(1.0, tk.END)
-                with open(filename, 'w') as f:
-                    f.write(content)
-                self.log_message(f"Logs saved to {filename}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save logs: {str(e)}")
-    
-    def format_bytes(self, bytes_val):
-        """Format bytes into human readable format"""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_val < 1024:
-                return f"{bytes_val:.1f} {unit}"
-            bytes_val /= 1024
-        return f"{bytes_val:.1f} TB"
-    
-    def format_uptime(self, seconds):
-        """Format uptime in human readable format"""
-        hours, remainder = divmod(seconds, 3600)
-        minutes, secs = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    
-    def update_gui(self):
-        """Update GUI elements from queues"""
-        # Update logs
-        try:
-            while True:
-                log_entry, level = self.log_queue.get_nowait()
-                
-                # Handle packet logs separately (they always go to packet monitor)
-                if level == "PACKET":
-                    self.packet_text.config(state=tk.NORMAL)
-                    self.packet_text.insert(tk.END, log_entry)
-                    self.packet_text.see(tk.END)
-                    self.packet_text.config(state=tk.DISABLED)
-                else:
-                    # Apply log level filter for regular logs
-                    selected_level = self.log_level.get()
-                    
-                    # Show log if filter is "ALL" or if level matches selected level
-                    if selected_level == "ALL" or level == selected_level:
-                        self.logs_text.config(state=tk.NORMAL)
-                        self.logs_text.insert(tk.END, log_entry)
-                        self.logs_text.see(tk.END)
-                        self.logs_text.config(state=tk.DISABLED)
-                        
-        except queue.Empty:
+        except Exception:
             pass
-        
-        # Update statistics
-        for key, label in self.stats_labels.items():
-            if key in ['bytes_sent', 'bytes_received']:
-                label.config(text=self.format_bytes(self.stats[key]))
-            elif key == 'uptime':
-                label.config(text=self.format_uptime(self.stats[key]))
-            elif key in ['encryption_time', 'decryption_time']:
-                label.config(text=f"{self.stats.get(key, 0):.3f}s")
-            elif key == 'tunnel_state':
-                state = self.stats.get(key, "DISCONNECTED")
-                label.config(text=state, 
-                        foreground="green" if state == "CONNECTED" else "red")
+
+        self.vpn_server: Optional[VPNServer] = None
+        self.vpn_client: Optional[VPNClient] = None
+        self.socks_proxy: Optional[SOCKSProxy] = None
+        self._server_thread: Optional[threading.Thread] = None
+
+        self.log_queue: queue.Queue = queue.Queue()
+        self._log_entries: List[tuple] = []
+        self._log_auto_scroll = True
+
+        self._bw_history: List[tuple] = []
+        self._max_bw_points = 120
+
+        self._setup_styles()
+        self._build_ui()
+        self._update_loop()
+
+    def _setup_styles(self) -> None:
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        style.configure(".", background=BG, foreground=TEXT, font=FONT_SANS)
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, foreground=TEXT, font=FONT_SANS)
+        style.configure("TNotebook", background=BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=CARD, foreground=TEXT, padding=[16, 6], font=FONT_SANS_BOLD)
+        style.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "#ffffff")])
+
+        style.configure("Card.TFrame", background=CARD)
+        style.configure("Card.TLabel", background=CARD, foreground=TEXT, font=FONT_SANS)
+        style.configure("CardTitle.TLabel", background=CARD, foreground="#ffffff", font=FONT_SANS_BOLD)
+        style.configure("CardDim.TLabel", background=CARD, foreground=TEXT_DIM, font=FONT_SANS)
+        style.configure("CardBig.TLabel", background=CARD, foreground="#ffffff", font=FONT_SANS_XL)
+
+        style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff", font=FONT_SANS_BOLD, padding=[12, 6])
+        style.map("Accent.TButton", background=[("active", HIGHLIGHT), ("disabled", "#333333")])
+        style.configure("Danger.TButton", background=RED, foreground="#ffffff", font=FONT_SANS_BOLD, padding=[12, 6])
+        style.map("Danger.TButton", background=[("active", "#c0392b"), ("disabled", "#333333")])
+        style.configure("Green.TButton", background=GREEN, foreground="#111111", font=FONT_SANS_BOLD, padding=[12, 6])
+        style.map("Green.TButton", background=[("active", "#00b359"), ("disabled", "#333333")])
+
+        style.configure("TEntry", fieldbackground="#0d1b2a", foreground=TEXT, insertcolor=TEXT)
+        style.configure("TCombobox", fieldbackground="#0d1b2a", foreground=TEXT)
+        style.configure("TCheckbutton", background=CARD, foreground=TEXT)
+
+    def _build_ui(self) -> None:
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        self._tab_dashboard = ttk.Frame(notebook)
+        self._tab_server = ttk.Frame(notebook)
+        self._tab_client = ttk.Frame(notebook)
+        self._tab_traffic = ttk.Frame(notebook)
+        self._tab_logs = ttk.Frame(notebook)
+
+        notebook.add(self._tab_dashboard, text=" Dashboard ")
+        notebook.add(self._tab_server, text=" Server ")
+        notebook.add(self._tab_client, text=" Client ")
+        notebook.add(self._tab_traffic, text=" Traffic Monitor ")
+        notebook.add(self._tab_logs, text=" Logs ")
+
+        self._build_dashboard()
+        self._build_server_tab()
+        self._build_client_tab()
+        self._build_traffic_tab()
+        self._build_logs_tab()
+
+    def _card(self, parent: tk.Widget, row: int = 0, col: int = 0, colspan: int = 1,
+              rowspan: int = 1, sticky: str = "nsew", padx: int = 6, pady: int = 6) -> ttk.Frame:
+        frame = ttk.Frame(parent, style="Card.TFrame", padding=12)
+        frame.grid(row=row, column=col, columnspan=colspan, rowspan=rowspan,
+                   sticky=sticky, padx=padx, pady=pady)
+        return frame
+
+    def _status_dot(self, parent: tk.Widget, color: str = RED) -> tk.Canvas:
+        c = tk.Canvas(parent, width=14, height=14, bg=CARD, highlightthickness=0)
+        c._dot = c.create_oval(2, 2, 12, 12, fill=color, outline="")
+        return c
+
+    def _set_dot_color(self, dot: tk.Canvas, color: str) -> None:
+        dot.itemconfig(dot._dot, fill=color)
+
+    def _build_dashboard(self) -> None:
+        tab = self._tab_dashboard
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+        tab.rowconfigure(0, weight=0)
+        tab.rowconfigure(1, weight=0)
+        tab.rowconfigure(2, weight=1)
+
+        card = self._card(tab, 0, 0, colspan=2)
+        card.columnconfigure(1, weight=1)
+
+        self._dash_dot = self._status_dot(card, RED)
+        self._dash_dot.grid(row=0, column=0, padx=(0, 8))
+        self._dash_status = ttk.Label(card, text="Disconnected", style="CardBig.TLabel")
+        self._dash_status.grid(row=0, column=1, sticky="w")
+        self._dash_detail = ttk.Label(card, text="No active connections", style="CardDim.TLabel")
+        self._dash_detail.grid(row=1, column=1, sticky="w")
+
+        btn_frame = ttk.Frame(card, style="Card.TFrame")
+        btn_frame.grid(row=0, column=2, rowspan=2, padx=(20, 0))
+        self._dash_start_btn = ttk.Button(btn_frame, text="Start Server", style="Green.TButton", command=self._start_server)
+        self._dash_start_btn.pack(side=tk.LEFT, padx=4)
+        self._dash_stop_btn = ttk.Button(btn_frame, text="Stop Server", style="Danger.TButton", command=self._stop_server, state=tk.DISABLED)
+        self._dash_stop_btn.pack(side=tk.LEFT, padx=4)
+
+        stats_card = self._card(tab, 1, 0, colspan=2)
+        stats_card.columnconfigure(tuple(range(6)), weight=1)
+        self._dash_stats = {}
+        stat_items = [
+            ("Uptime", "uptime", "00:00:00"),
+            ("Bytes Sent", "bytes_sent", "0 B"),
+            ("Bytes Received", "bytes_recv", "0 B"),
+            ("Clients", "clients", "0"),
+            ("Enc Ops", "enc_time", "0.000s"),
+            ("Packets", "packets", "0"),
+        ]
+        for i, (label, key, default) in enumerate(stat_items):
+            ttk.Label(stats_card, text=label, style="CardDim.TLabel").grid(row=0, column=i)
+            lbl = ttk.Label(stats_card, text=default, style="CardTitle.TLabel")
+            lbl.grid(row=1, column=i)
+            self._dash_stats[key] = lbl
+
+        srv_card = self._card(tab, 2, 0)
+        ttk.Label(srv_card, text="Server", style="CardTitle.TLabel").pack(anchor="w")
+        self._dash_srv_dot = self._status_dot(srv_card)
+        self._dash_srv_dot.pack(anchor="w", pady=4)
+        self._dash_srv_info = ttk.Label(srv_card, text="Stopped", style="Card.TLabel", wraplength=400, justify="left")
+        self._dash_srv_info.pack(anchor="w", fill=tk.X)
+
+        cli_card = self._card(tab, 2, 1)
+        ttk.Label(cli_card, text="Client", style="CardTitle.TLabel").pack(anchor="w")
+        self._dash_cli_dot = self._status_dot(cli_card)
+        self._dash_cli_dot.pack(anchor="w", pady=4)
+        self._dash_cli_info = ttk.Label(cli_card, text="Disconnected", style="Card.TLabel", wraplength=400, justify="left")
+        self._dash_cli_info.pack(anchor="w", fill=tk.X)
+
+    def _build_server_tab(self) -> None:
+        tab = self._tab_server
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+        tab.rowconfigure(2, weight=1)
+
+        cfg_card = self._card(tab, 0, 0)
+        ttk.Label(cfg_card, text="Server Configuration", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+        ttk.Label(cfg_card, text="Bind IP:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=4)
+        self._srv_ip = ttk.Entry(cfg_card, width=16)
+        self._srv_ip.insert(0, "0.0.0.0")
+        self._srv_ip.grid(row=1, column=1, padx=4)
+
+        ttk.Label(cfg_card, text="Port:", style="Card.TLabel").grid(row=1, column=2, sticky="w", padx=4)
+        self._srv_port = ttk.Entry(cfg_card, width=8)
+        self._srv_port.insert(0, "8080")
+        self._srv_port.grid(row=1, column=3, padx=4)
+
+        ttk.Label(cfg_card, text="Max Clients:", style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=4)
+        self._srv_max = ttk.Entry(cfg_card, width=8)
+        self._srv_max.insert(0, "100")
+        self._srv_max.grid(row=2, column=1, padx=4)
+
+        ttk.Label(cfg_card, text="Subnet:", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=4)
+        self._srv_subnet = ttk.Entry(cfg_card, width=16)
+        self._srv_subnet.insert(0, "10.0.0.0/24")
+        self._srv_subnet.grid(row=2, column=3, padx=4)
+
+        ctrl_card = self._card(tab, 0, 1)
+        ttk.Label(ctrl_card, text="Server Control", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+
+        btn_row = ttk.Frame(ctrl_card, style="Card.TFrame")
+        btn_row.pack(fill=tk.X)
+        self._srv_start_btn = ttk.Button(btn_row, text="Start Server", style="Green.TButton", command=self._start_server)
+        self._srv_start_btn.pack(side=tk.LEFT, padx=4)
+        self._srv_stop_btn = ttk.Button(btn_row, text="Stop Server", style="Danger.TButton", command=self._stop_server, state=tk.DISABLED)
+        self._srv_stop_btn.pack(side=tk.LEFT, padx=4)
+
+        status_row = ttk.Frame(ctrl_card, style="Card.TFrame")
+        status_row.pack(fill=tk.X, pady=(8, 0))
+        self._srv_dot = self._status_dot(ctrl_card)
+        self._srv_dot.pack(anchor="w")
+        self._srv_status_lbl = ttk.Label(ctrl_card, text="Stopped", style="Card.TLabel")
+        self._srv_status_lbl.pack(anchor="w")
+
+        user_card = self._card(tab, 1, 0, colspan=2)
+        ttk.Label(user_card, text="User Management", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 8))
+
+        ttk.Label(user_card, text="Username:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=4)
+        self._user_name = ttk.Entry(user_card, width=16)
+        self._user_name.grid(row=1, column=1, padx=4)
+        ttk.Label(user_card, text="Password:", style="Card.TLabel").grid(row=1, column=2, sticky="w", padx=4)
+        self._user_pass = ttk.Entry(user_card, width=16, show="*")
+        self._user_pass.grid(row=1, column=3, padx=4)
+        ttk.Button(user_card, text="Add User", style="Accent.TButton", command=self._add_user).grid(row=1, column=4, padx=4)
+
+        self._user_list = tk.Listbox(user_card, bg="#0d1b2a", fg=TEXT, font=FONT_MONO, height=4, selectbackground=ACCENT)
+        self._user_list.grid(row=2, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
+        ttk.Button(user_card, text="Remove", style="Danger.TButton", command=self._remove_user).grid(row=2, column=4, padx=4)
+
+        clients_card = self._card(tab, 2, 0, colspan=2)
+        ttk.Label(clients_card, text="Connected Clients", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+        self._clients_text = tk.Text(clients_card, bg="#0d1b2a", fg=TEXT, font=FONT_MONO, height=8, state=tk.DISABLED, wrap=tk.NONE)
+        self._clients_text.pack(fill=tk.BOTH, expand=True)
+
+        self._user_list.insert(tk.END, "admin")
+
+    def _build_client_tab(self) -> None:
+        tab = self._tab_client
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+        tab.rowconfigure(2, weight=1)
+
+        conn_card = self._card(tab, 0, 0)
+        ttk.Label(conn_card, text="Connection", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+        ttk.Label(conn_card, text="Server:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=4)
+        self._cli_host = ttk.Entry(conn_card, width=16)
+        self._cli_host.insert(0, "127.0.0.1")
+        self._cli_host.grid(row=1, column=1, padx=4)
+
+        ttk.Label(conn_card, text="Port:", style="Card.TLabel").grid(row=1, column=2, sticky="w", padx=4)
+        self._cli_port = ttk.Entry(conn_card, width=8)
+        self._cli_port.insert(0, "8080")
+        self._cli_port.grid(row=1, column=3, padx=4)
+
+        ttk.Label(conn_card, text="Username:", style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=4)
+        self._cli_user = ttk.Entry(conn_card, width=16)
+        self._cli_user.grid(row=2, column=1, padx=4)
+
+        ttk.Label(conn_card, text="Password:", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=4)
+        self._cli_pass = ttk.Entry(conn_card, width=16, show="*")
+        self._cli_pass.grid(row=2, column=3, padx=4)
+
+        socks_card = self._card(tab, 0, 1)
+        ttk.Label(socks_card, text="SOCKS5 Proxy", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+        self._socks_enabled = tk.BooleanVar(value=True)
+        ttk.Checkbutton(socks_card, text="Enable SOCKS Proxy", variable=self._socks_enabled, style="TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w", padx=4)
+
+        ttk.Label(socks_card, text="Port:", style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=4)
+        self._socks_port = ttk.Entry(socks_card, width=8)
+        self._socks_port.insert(0, "1080")
+        self._socks_port.grid(row=2, column=1, padx=4)
+
+        ctrl_card = self._card(tab, 1, 0, colspan=2)
+        btn_row = ttk.Frame(ctrl_card, style="Card.TFrame")
+        btn_row.pack(fill=tk.X)
+        self._cli_connect_btn = ttk.Button(btn_row, text="Connect", style="Green.TButton", command=self._connect_client)
+        self._cli_connect_btn.pack(side=tk.LEFT, padx=4)
+        self._cli_disconnect_btn = ttk.Button(btn_row, text="Disconnect", style="Danger.TButton", command=self._disconnect_client, state=tk.DISABLED)
+        self._cli_disconnect_btn.pack(side=tk.LEFT, padx=4)
+
+        self._cli_dot = self._status_dot(ctrl_card)
+        self._cli_dot.pack(anchor="w", pady=4)
+        self._cli_status_lbl = ttk.Label(ctrl_card, text="Disconnected", style="Card.TLabel")
+        self._cli_status_lbl.pack(anchor="w")
+
+        info_card = self._card(tab, 2, 0, colspan=2)
+        ttk.Label(info_card, text="Connection Details", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+        self._cli_info_text = tk.Text(info_card, bg="#0d1b2a", fg=TEXT, font=FONT_MONO, height=10, state=tk.DISABLED, wrap=tk.WORD)
+        self._cli_info_text.pack(fill=tk.BOTH, expand=True)
+
+    def _build_traffic_tab(self) -> None:
+        tab = self._tab_traffic
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=0)
+        tab.rowconfigure(1, weight=1)
+        tab.rowconfigure(2, weight=1)
+
+        stats_card = self._card(tab, 0, 0)
+        stats_card.columnconfigure(tuple(range(8)), weight=1)
+        self._traffic_stats = {}
+        items = [
+            ("Bytes Sent", "t_sent"), ("Bytes Recv", "t_recv"),
+            ("Pkts Sent", "t_psent"), ("Pkts Recv", "t_precv"),
+            ("Enc Time", "t_enc"), ("Dec Time", "t_dec"),
+            ("Enc Errors", "t_eerr"), ("Dec Errors", "t_derr"),
+        ]
+        for i, (label, key) in enumerate(items):
+            ttk.Label(stats_card, text=label, style="CardDim.TLabel").grid(row=0, column=i, padx=2)
+            lbl = ttk.Label(stats_card, text="0", style="CardTitle.TLabel")
+            lbl.grid(row=1, column=i, padx=2)
+            self._traffic_stats[key] = lbl
+
+        graph_card = self._card(tab, 1, 0)
+        ttk.Label(graph_card, text="Bandwidth (10s rolling)", style="CardTitle.TLabel").pack(anchor="w")
+        self._bw_canvas = tk.Canvas(graph_card, bg="#0d1b2a", height=140, highlightthickness=0)
+        self._bw_canvas.pack(fill=tk.BOTH, expand=True, pady=4)
+
+        pkt_card = self._card(tab, 2, 0)
+        pkt_header = ttk.Frame(pkt_card, style="Card.TFrame")
+        pkt_header.pack(fill=tk.X)
+        ttk.Label(pkt_header, text="Live Packet Log", style="CardTitle.TLabel").pack(side=tk.LEFT)
+        ttk.Button(pkt_header, text="Clear", command=self._clear_packet_log).pack(side=tk.RIGHT, padx=4)
+
+        ttk.Label(pkt_header, text="Filter:", style="CardDim.TLabel").pack(side=tk.RIGHT, padx=(8, 2))
+        self._pkt_filter = ttk.Combobox(pkt_header, values=["ALL", "DATA", "KEEPALIVE", "SOCKS", "CONTROL"], width=10, state="readonly")
+        self._pkt_filter.set("ALL")
+        self._pkt_filter.pack(side=tk.RIGHT)
+
+        self._pkt_text = tk.Text(pkt_card, bg="#0d1b2a", fg=TEXT, font=FONT_MONO_SM, height=12, state=tk.DISABLED, wrap=tk.NONE)
+        pkt_scroll = ttk.Scrollbar(pkt_card, command=self._pkt_text.yview)
+        self._pkt_text.configure(yscrollcommand=pkt_scroll.set)
+        self._pkt_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        pkt_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._pkt_text.tag_configure("DATA", foreground=BLUE)
+        self._pkt_text.tag_configure("KEEPALIVE", foreground=TEXT_DIM)
+        self._pkt_text.tag_configure("SOCKS", foreground=ORANGE)
+        self._pkt_text.tag_configure("CONTROL", foreground=GREEN)
+        self._pkt_text.tag_configure("ERROR", foreground=RED)
+
+    def _build_logs_tab(self) -> None:
+        tab = self._tab_logs
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+
+        ctrl = self._card(tab, 0, 0)
+        ctrl_row = ttk.Frame(ctrl, style="Card.TFrame")
+        ctrl_row.pack(fill=tk.X)
+
+        ttk.Label(ctrl_row, text="Level:", style="Card.TLabel").pack(side=tk.LEFT, padx=4)
+        self._log_filter = ttk.Combobox(ctrl_row, values=["ALL", "INFO", "WARNING", "ERROR", "DEBUG"], width=10, state="readonly")
+        self._log_filter.set("ALL")
+        self._log_filter.pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(ctrl_row, text="Search:", style="Card.TLabel").pack(side=tk.LEFT, padx=(12, 4))
+        self._log_search = ttk.Entry(ctrl_row, width=24)
+        self._log_search.pack(side=tk.LEFT, padx=4)
+        self._log_search.bind("<Return>", lambda e: self._apply_log_filter())
+        ttk.Button(ctrl_row, text="Filter", command=self._apply_log_filter).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(ctrl_row, text="Clear", command=self._clear_logs).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(ctrl_row, text="Export", command=self._export_logs).pack(side=tk.RIGHT, padx=4)
+
+        self._log_scroll_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ctrl_row, text="Auto-scroll", variable=self._log_scroll_var, style="TCheckbutton").pack(side=tk.RIGHT, padx=4)
+
+        log_card = self._card(tab, 1, 0)
+        self._log_text = tk.Text(log_card, bg="#0d1b2a", fg=TEXT, font=FONT_MONO, state=tk.DISABLED, wrap=tk.NONE)
+        log_scroll_y = ttk.Scrollbar(log_card, command=self._log_text.yview)
+        log_scroll_x = ttk.Scrollbar(log_card, orient=tk.HORIZONTAL, command=self._log_text.xview)
+        self._log_text.configure(yscrollcommand=log_scroll_y.set, xscrollcommand=log_scroll_x.set)
+        self._log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._log_text.tag_configure("INFO", foreground=TEXT)
+        self._log_text.tag_configure("WARNING", foreground=ORANGE)
+        self._log_text.tag_configure("ERROR", foreground=RED)
+        self._log_text.tag_configure("DEBUG", foreground=TEXT_DIM)
+
+    def _start_server(self) -> None:
+        if self.vpn_server and self.vpn_server.running:
+            return
+
+        try:
+            ip = self._srv_ip.get().strip()
+            port = int(self._srv_port.get().strip())
+            max_clients = int(self._srv_max.get().strip())
+            subnet = self._srv_subnet.get().strip()
+
+            config = SalsaConfig(
+                server_host=ip, server_port=port,
+                max_clients=max_clients, tunnel_subnet=subnet,
+            )
+
+            for i in range(self._user_list.size()):
+                username = self._user_list.get(i)
+
+                config.add_user(username, username)
+
+            config.add_user("admin", "admin123")
+
+            self.vpn_server = VPNServer(config=config)
+            self.vpn_server.on_log = lambda msg, lvl: self._enqueue_log(msg, lvl, "SERVER")
+            self.vpn_server.on_client_connect = lambda s: self._enqueue_log(f"Client connected: {s.username} ({s.assigned_ip})", "INFO", "SERVER")
+            self.vpn_server.on_client_disconnect = lambda cid: self._enqueue_log(f"Client disconnected: {cid}", "INFO", "SERVER")
+
+            if not self.vpn_server.start_server():
+                self._enqueue_log("Failed to start server", "ERROR", "SERVER")
+                return
+
+            self._server_thread = threading.Thread(target=self.vpn_server.accept_connections, daemon=True, name="gui-server")
+            self._server_thread.start()
+
+            self._srv_start_btn.config(state=tk.DISABLED)
+            self._srv_stop_btn.config(state=tk.NORMAL)
+            self._dash_start_btn.config(state=tk.DISABLED)
+            self._dash_stop_btn.config(state=tk.NORMAL)
+            self._set_dot_color(self._srv_dot, GREEN)
+            self._set_dot_color(self._dash_srv_dot, GREEN)
+            self._srv_status_lbl.config(text=f"Running on {ip}:{port}")
+            self._enqueue_log(f"Server started on {ip}:{port}", "INFO", "SERVER")
+
+        except Exception as e:
+            self._enqueue_log(f"Server start error: {e}", "ERROR", "SERVER")
+
+    def _stop_server(self) -> None:
+        if self.vpn_server:
+            self.vpn_server.stop_server()
+            self.vpn_server = None
+
+        self._srv_start_btn.config(state=tk.NORMAL)
+        self._srv_stop_btn.config(state=tk.DISABLED)
+        self._dash_start_btn.config(state=tk.NORMAL)
+        self._dash_stop_btn.config(state=tk.DISABLED)
+        self._set_dot_color(self._srv_dot, RED)
+        self._set_dot_color(self._dash_srv_dot, RED)
+        self._srv_status_lbl.config(text="Stopped")
+        self._dash_srv_info.config(text="Stopped")
+        self._enqueue_log("Server stopped", "INFO", "SERVER")
+
+    def _add_user(self) -> None:
+        username = self._user_name.get().strip()
+        password = self._user_pass.get().strip()
+        if not username or not password:
+            return
+
+        items = list(self._user_list.get(0, tk.END))
+        if username not in items:
+            self._user_list.insert(tk.END, username)
+
+        if self.vpn_server:
+            self.vpn_server.config.add_user(username, password)
+        self._user_name.delete(0, tk.END)
+        self._user_pass.delete(0, tk.END)
+        self._enqueue_log(f"User added: {username}", "INFO", "SERVER")
+
+    def _remove_user(self) -> None:
+        sel = self._user_list.curselection()
+        if not sel:
+            return
+        username = self._user_list.get(sel[0])
+        self._user_list.delete(sel[0])
+        if self.vpn_server:
+            self.vpn_server.config.remove_user(username)
+        self._enqueue_log(f"User removed: {username}", "INFO", "SERVER")
+
+    def _connect_client(self) -> None:
+        if self.vpn_client and self.vpn_client.authenticated:
+            return
+
+        host = self._cli_host.get().strip()
+        port_str = self._cli_port.get().strip()
+        username = self._cli_user.get().strip()
+        password = self._cli_pass.get().strip()
+
+        if not username or not password:
+            self._enqueue_log("Username and password required", "ERROR", "CLIENT")
+            return
+
+        try:
+            port = int(port_str)
+        except ValueError:
+            self._enqueue_log("Invalid port number", "ERROR", "CLIENT")
+            return
+
+        self._cli_connect_btn.config(state=tk.DISABLED)
+        self._set_dot_color(self._cli_dot, ORANGE)
+        self._cli_status_lbl.config(text="Connecting...")
+
+        def do_connect():
+            self.vpn_client = VPNClient(server_host=host, server_port=port)
+            self.vpn_client.on_log = lambda msg, lvl: self._enqueue_log(msg, lvl, "CLIENT")
+            self.vpn_client.on_status_change = self._on_client_status
+
+            if self.vpn_client.connect(username, password):
+                self.root.after(0, self._client_connected)
+
+                if self._socks_enabled.get():
+                    self._start_socks_proxy()
             else:
-                label.config(text=str(self.stats.get(key, 0)))
-        
-        # Update server stats with enhanced tunnel information
-        if self.server_process and self.server_process.poll() is None:
-            stats_info = f"""VPN Server Statistics:
-    ═══════════════════════════════════════
-    Runtime Information:
-    • Server Uptime: {self.format_uptime(self.stats['uptime'])}
-    • Server State: Running
-    • Process ID: {self.server_process.pid}
+                self.root.after(0, self._client_failed)
 
-    Connection Statistics:
-    • Active Client Connections: {self.stats['connections']}
-    • Total Data Transmitted: {self.format_bytes(self.stats['bytes_sent'])}
-    • Total Data Received: {self.format_bytes(self.stats['bytes_received'])}
-    • Total Packets Processed: {self.stats['packets_sent'] + self.stats['packets_received']}
+        threading.Thread(target=do_connect, daemon=True).start()
 
-    Tunnel Manager Statistics:
-    • Tunnel State: {self.stats.get('tunnel_state', 'UNKNOWN')}
-    • Encryption Operations: {self.stats.get('encryption_time', 0):.3f}s total
-    • Decryption Operations: {self.stats.get('decryption_time', 0):.3f}s total
-    • Injected Packages: {self.stats.get('injected_packets', 0)}
-    • Cipher: Deimos Custom Encryption
+    def _client_connected(self) -> None:
+        self._cli_disconnect_btn.config(state=tk.NORMAL)
+        self._cli_connect_btn.config(state=tk.DISABLED)
+        self._set_dot_color(self._cli_dot, GREEN)
+        self._set_dot_color(self._dash_cli_dot, GREEN)
+        ip = self.vpn_client.assigned_ip or ""
+        self._cli_status_lbl.config(text=f"Connected (IP: {ip})")
+        self._dash_cli_info.config(text=f"Connected to {self.vpn_client.server_host}:{self.vpn_client.server_port}\nIP: {ip}")
 
-    Network Configuration:
-    • Server Address: {self.server_ip.get()}:{self.server_port.get()}
-    • Max Clients: {self.max_clients.get()}
-    • Buffer Size: 4096 bytes
-    • Tunnel Subnet: 10.0.0.0/24
-    """
-            self.server_stats_text.config(state=tk.NORMAL)
-            self.server_stats_text.delete(1.0, tk.END)
-            self.server_stats_text.insert(1.0, stats_info)
-            self.server_stats_text.config(state=tk.DISABLED)
-        
-        # Update client info
-        if self.client_process and self.client_process.poll() is None:
-            client_info = f"""Client Connection Info:
-    Server: {self.client_server_ip.get()}:{self.client_port.get()}
-    Client ID: {self.client_id.get()}
-    Connection Status: Active
-    Data Sent: {self.format_bytes(self.stats['bytes_sent'])}
-    Data Received: {self.format_bytes(self.stats['bytes_received'])}
-    Client Process ID: {self.client_process.pid}
-    """
-            self.client_info_text.config(state=tk.NORMAL)
-            self.client_info_text.delete(1.0, tk.END)
-            self.client_info_text.insert(1.0, client_info)
-            self.client_info_text.config(state=tk.DISABLED)
-        
-        # Schedule next update
-        self.root.after(1000, self.update_gui)
+    def _client_failed(self) -> None:
+        self._cli_connect_btn.config(state=tk.NORMAL)
+        self._cli_disconnect_btn.config(state=tk.DISABLED)
+        self._set_dot_color(self._cli_dot, RED)
+        self._set_dot_color(self._dash_cli_dot, RED)
+        self._cli_status_lbl.config(text="Connection Failed")
+        self._dash_cli_info.config(text="Connection failed")
 
-def main():
+    def _disconnect_client(self) -> None:
+        if self.socks_proxy:
+            self.socks_proxy.stop()
+            self.socks_proxy = None
+        if self.vpn_client:
+            self.vpn_client.disconnect()
+            self.vpn_client = None
+
+        self._cli_connect_btn.config(state=tk.NORMAL)
+        self._cli_disconnect_btn.config(state=tk.DISABLED)
+        self._set_dot_color(self._cli_dot, RED)
+        self._set_dot_color(self._dash_cli_dot, RED)
+        self._cli_status_lbl.config(text="Disconnected")
+        self._dash_cli_info.config(text="Disconnected")
+        self._enqueue_log("Client disconnected", "INFO", "CLIENT")
+
+    def _on_client_status(self, status: str, detail: str) -> None:
+        self._enqueue_log(f"Client status: {status} - {detail}", "INFO", "CLIENT")
+        if status == "disconnected":
+
+            self.root.after(0, self._client_disconnected_by_server, detail)
+
+    def _client_disconnected_by_server(self, detail: str = "") -> None:
+        if self.socks_proxy:
+            self.socks_proxy.stop()
+            self.socks_proxy = None
+
+        self.vpn_client = None
+
+        self._cli_connect_btn.config(state=tk.NORMAL)
+        self._cli_disconnect_btn.config(state=tk.DISABLED)
+        self._set_dot_color(self._cli_dot, RED)
+        self._set_dot_color(self._dash_cli_dot, RED)
+        msg = f"Disconnected: {detail}" if detail else "Disconnected"
+        self._cli_status_lbl.config(text=msg)
+        self._dash_cli_info.config(text=msg)
+
+    def _start_socks_proxy(self) -> None:
+        if not self.vpn_client:
+            return
+        try:
+            socks_port = int(self._socks_port.get().strip())
+        except ValueError:
+            socks_port = 1080
+
+        self.socks_proxy = SOCKSProxy(self.vpn_client)
+        self.socks_proxy.on_log = lambda msg, lvl: self._enqueue_log(msg, lvl, "SOCKS")
+        if self.socks_proxy.start("127.0.0.1", socks_port):
+            self._enqueue_log(f"SOCKS5 proxy started on 127.0.0.1:{socks_port}", "INFO", "SOCKS")
+        else:
+            self._enqueue_log("Failed to start SOCKS5 proxy", "ERROR", "SOCKS")
+
+    def _enqueue_log(self, message: str, level: str = "INFO", source: str = "SYSTEM") -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self.log_queue.put((timestamp, level, source, message))
+
+    def _process_log_queue(self) -> None:
+        count = 0
+        while count < 100:
+            try:
+                ts, level, source, msg = self.log_queue.get_nowait()
+                self._log_entries.append((ts, level, source, msg))
+
+                selected_level = self._log_filter.get()
+                search = self._log_search.get().strip().lower()
+
+                if selected_level != "ALL" and level != selected_level:
+                    count += 1
+                    continue
+                if search and search not in msg.lower() and search not in source.lower():
+                    count += 1
+                    continue
+
+                line = f"[{ts}] [{level:7s}] [{source:6s}] {msg}\n"
+                self._log_text.config(state=tk.NORMAL)
+                self._log_text.insert(tk.END, line, level)
+                if self._log_scroll_var.get():
+                    self._log_text.see(tk.END)
+                self._log_text.config(state=tk.DISABLED)
+
+                if source in ("TUNNEL", "SOCKS"):
+                    self._add_packet_entry(ts, level, source, msg)
+
+                count += 1
+            except queue.Empty:
+                break
+
+    def _add_packet_entry(self, ts: str, level: str, source: str, msg: str) -> None:
+        pkt_filter = self._pkt_filter.get()
+        tag = "DATA"
+        msg_upper = msg.upper()
+        if "KEEPALIVE" in msg_upper:
+            tag = "KEEPALIVE"
+        elif "SOCKS" in msg_upper:
+            tag = "SOCKS"
+        elif any(k in msg_upper for k in ("HANDSHAKE", "CONFIG", "DISCONNECT", "CONNECT")):
+            tag = "CONTROL"
+        elif "ERROR" in msg_upper or level == "ERROR":
+            tag = "ERROR"
+
+        if pkt_filter != "ALL" and tag != pkt_filter:
+            return
+
+        line = f"[{ts}] [{source}] {msg}\n"
+        self._pkt_text.config(state=tk.NORMAL)
+        self._pkt_text.insert(tk.END, line, tag)
+        self._pkt_text.see(tk.END)
+        self._pkt_text.config(state=tk.DISABLED)
+
+    def _apply_log_filter(self) -> None:
+        self._log_text.config(state=tk.NORMAL)
+        self._log_text.delete("1.0", tk.END)
+        selected_level = self._log_filter.get()
+        search = self._log_search.get().strip().lower()
+        for ts, level, source, msg in self._log_entries:
+            if selected_level != "ALL" and level != selected_level:
+                continue
+            if search and search not in msg.lower() and search not in source.lower():
+                continue
+            line = f"[{ts}] [{level:7s}] [{source:6s}] {msg}\n"
+            self._log_text.insert(tk.END, line, level)
+        self._log_text.see(tk.END)
+        self._log_text.config(state=tk.DISABLED)
+
+    def _clear_logs(self) -> None:
+        self._log_entries.clear()
+        self._log_text.config(state=tk.NORMAL)
+        self._log_text.delete("1.0", tk.END)
+        self._log_text.config(state=tk.DISABLED)
+
+    def _export_logs(self) -> None:
+        filename = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("Log files", "*.log"), ("Text files", "*.txt")])
+        if filename:
+            with open(filename, "w") as f:
+                for ts, level, source, msg in self._log_entries:
+                    f.write(f"[{ts}] [{level}] [{source}] {msg}\n")
+            self._enqueue_log(f"Logs exported to {filename}", "INFO", "SYSTEM")
+
+    def _clear_packet_log(self) -> None:
+        self._pkt_text.config(state=tk.NORMAL)
+        self._pkt_text.delete("1.0", tk.END)
+        self._pkt_text.config(state=tk.DISABLED)
+
+    def _update_stats(self) -> None:
+        server_running = self.vpn_server and self.vpn_server.running
+        client_connected = self.vpn_client and self.vpn_client.authenticated
+
+        total_stats = {
+            "bytes_sent": 0, "bytes_received": 0,
+            "packets_sent": 0, "packets_received": 0,
+            "encryption_time": 0.0, "decryption_time": 0.0,
+            "encryption_errors": 0, "decryption_errors": 0,
+            "uptime": 0,
+        }
+
+        if server_running:
+            agg = self.vpn_server.get_aggregate_tunnel_stats()
+            for k in total_stats:
+                if k in agg:
+                    total_stats[k] += agg[k]
+            srv_stats = self.vpn_server.get_server_stats()
+            total_stats["uptime"] = max(total_stats["uptime"], srv_stats.get("uptime", 0))
+
+        if client_connected:
+            cli_status = self.vpn_client.get_status()
+            for k in ("bytes_sent", "bytes_received", "packets_sent", "packets_received", "encryption_time", "decryption_time"):
+                total_stats[k] += cli_status.get(k, 0)
+            total_stats["uptime"] = max(total_stats["uptime"], cli_status.get("uptime", 0))
+
+        self._dash_stats["uptime"].config(text=self._fmt_time(total_stats["uptime"]))
+        self._dash_stats["bytes_sent"].config(text=self._fmt_bytes(total_stats["bytes_sent"]))
+        self._dash_stats["bytes_recv"].config(text=self._fmt_bytes(total_stats["bytes_received"]))
+        self._dash_stats["enc_time"].config(text=f"{total_stats['encryption_time']:.3f}s")
+        self._dash_stats["packets"].config(text=str(total_stats["packets_sent"] + total_stats["packets_received"]))
+
+        num_clients = len(self.vpn_server.clients) if server_running else 0
+        self._dash_stats["clients"].config(text=str(num_clients))
+
+        if server_running and client_connected:
+            self._set_dot_color(self._dash_dot, GREEN)
+            self._dash_status.config(text="Active")
+            self._dash_detail.config(text=f"Server running, client connected ({self.vpn_client.assigned_ip})")
+        elif server_running:
+            self._set_dot_color(self._dash_dot, BLUE)
+            self._dash_status.config(text="Server Running")
+            self._dash_detail.config(text=f"{num_clients} client(s) connected")
+        elif client_connected:
+            self._set_dot_color(self._dash_dot, GREEN)
+            self._dash_status.config(text="Client Connected")
+            self._dash_detail.config(text=f"Connected to {self.vpn_client.server_host}")
+        else:
+            self._set_dot_color(self._dash_dot, RED)
+            self._dash_status.config(text="Disconnected")
+            self._dash_detail.config(text="No active connections")
+
+        if server_running:
+            srv = self.vpn_server.get_server_stats()
+            info = f"Running on {self.vpn_server.config.server_host}:{self.vpn_server.config.server_port}\n"
+            info += f"Clients: {srv['active_clients']}/{srv['max_clients']}\n"
+            info += f"Uptime: {self._fmt_time(srv['uptime'])}"
+            self._dash_srv_info.config(text=info)
+
+        if server_running:
+            srv = self.vpn_server.get_server_stats()
+            lines = ["Username        IP              Tunnel     Bytes In      Bytes Out"]
+            lines.append("-" * 70)
+            for c in srv.get("clients", []):
+                lines.append(
+                    f"{c['username']:<15} {c['assigned_ip']:<15} {c['tunnel_state']:<10} "
+                    f"{self._fmt_bytes(c['bytes_received']):<13} {self._fmt_bytes(c['bytes_sent'])}"
+                )
+            text = "\n".join(lines) if srv.get("clients") else "No clients connected"
+            self._clients_text.config(state=tk.NORMAL)
+            self._clients_text.delete("1.0", tk.END)
+            self._clients_text.insert("1.0", text)
+            self._clients_text.config(state=tk.DISABLED)
+
+        if client_connected:
+            status = self.vpn_client.get_status()
+            socks_info = ""
+            if self.socks_proxy and self.socks_proxy.running:
+                socks_stats = self.socks_proxy.get_stats()
+                socks_info = (
+                    f"\nSOCKS5 Proxy: 127.0.0.1:{self.socks_proxy.port}"
+                    f"\n  Active: {socks_stats['active_connections']} | Total: {socks_stats['total_connections']}"
+                    f"\n  Bytes proxied: {self._fmt_bytes(socks_stats['bytes_proxied'])}"
+                )
+            info = (
+                f"Server: {status['server']}\n"
+                f"Client ID: {status['client_id']}\n"
+                f"Assigned IP: {status['assigned_ip']}\n"
+                f"Tunnel State: {status['tunnel_state']}\n"
+                f"Uptime: {self._fmt_time(status['uptime'])}\n"
+                f"Bytes Sent: {self._fmt_bytes(status['bytes_sent'])}\n"
+                f"Bytes Received: {self._fmt_bytes(status['bytes_received'])}\n"
+                f"Packets: {status['packets_sent']} sent / {status['packets_received']} recv\n"
+                f"Encryption: {status['encryption_time']:.4f}s\n"
+                f"Decryption: {status['decryption_time']:.4f}s"
+                f"{socks_info}"
+            )
+            self._cli_info_text.config(state=tk.NORMAL)
+            self._cli_info_text.delete("1.0", tk.END)
+            self._cli_info_text.insert("1.0", info)
+            self._cli_info_text.config(state=tk.DISABLED)
+
+        self._traffic_stats["t_sent"].config(text=self._fmt_bytes(total_stats["bytes_sent"]))
+        self._traffic_stats["t_recv"].config(text=self._fmt_bytes(total_stats["bytes_received"]))
+        self._traffic_stats["t_psent"].config(text=str(total_stats["packets_sent"]))
+        self._traffic_stats["t_precv"].config(text=str(total_stats["packets_received"]))
+        self._traffic_stats["t_enc"].config(text=f"{total_stats['encryption_time']:.3f}s")
+        self._traffic_stats["t_dec"].config(text=f"{total_stats['decryption_time']:.3f}s")
+        self._traffic_stats["t_eerr"].config(text=str(total_stats["encryption_errors"]))
+        self._traffic_stats["t_derr"].config(text=str(total_stats["decryption_errors"]))
+
+        bps = total_stats["bytes_sent"] + total_stats["bytes_received"]
+        self._bw_history.append((time.time(), bps))
+        if len(self._bw_history) > self._max_bw_points:
+            self._bw_history = self._bw_history[-self._max_bw_points:]
+        self._draw_bandwidth_graph()
+
+    def _draw_bandwidth_graph(self) -> None:
+        canvas = self._bw_canvas
+        canvas.delete("all")
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w < 50 or h < 30 or len(self._bw_history) < 2:
+            return
+
+        deltas = []
+        for i in range(1, len(self._bw_history)):
+            dt = self._bw_history[i][0] - self._bw_history[i - 1][0]
+            db = self._bw_history[i][1] - self._bw_history[i - 1][1]
+            bps = max(0, db / dt) if dt > 0 else 0
+            deltas.append(bps)
+
+        if not deltas:
+            return
+
+        max_bps = max(max(deltas), 1)
+        padding = 10
+        graph_w = w - 2 * padding
+        graph_h = h - 2 * padding
+
+        for i in range(5):
+            y = padding + (graph_h * i / 4)
+            canvas.create_line(padding, y, w - padding, y, fill="#1a2a3a", dash=(2, 4))
+            val = max_bps * (4 - i) / 4
+            canvas.create_text(padding + 2, y - 8, text=self._fmt_bytes(val) + "/s", fill=TEXT_DIM, font=FONT_MONO_SM, anchor="w")
+
+        points = []
+        for i, bps in enumerate(deltas):
+            x = padding + (graph_w * i / max(len(deltas) - 1, 1))
+            y = padding + graph_h - (graph_h * bps / max_bps)
+            points.append((x, y))
+
+        if len(points) >= 2:
+
+            fill_points = [(padding, padding + graph_h)] + points + [(points[-1][0], padding + graph_h)]
+            flat = [coord for p in fill_points for coord in p]
+            canvas.create_polygon(flat, fill="#0f3460", outline="")
+
+            flat_line = [coord for p in points for coord in p]
+            canvas.create_line(flat_line, fill=BLUE, width=2, smooth=True)
+
+    @staticmethod
+    def _fmt_bytes(b: float) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if abs(b) < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} TB"
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        s = int(seconds)
+        h, s = divmod(s, 3600)
+        m, s = divmod(s, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _update_loop(self) -> None:
+        self._process_log_queue()
+        self._update_stats()
+        self.root.after(1000, self._update_loop)
+
+    def shutdown(self) -> None:
+        if self.socks_proxy:
+            self.socks_proxy.stop()
+        if self.vpn_client:
+            self.vpn_client.disconnect()
+        if self.vpn_server:
+            self.vpn_server.stop_server()
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     root = tk.Tk()
     app = VPNGUIManager(root)
-    
-    # Handle window close
+
     def on_closing():
-        app.stop_server()
-        app.disconnect_client()
-        app.stop_monitoring()
+        app.shutdown()
         root.destroy()
-    
+
     root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 

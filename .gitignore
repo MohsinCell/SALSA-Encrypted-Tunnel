@@ -1,0 +1,40 @@
+# Git ignore for Salsa – Encrypted Tunnel
+
+# Python
+
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+.env.*
+
+# C++ / build files
+
+*.obj
+*.dll
+*.lib
+*.exp
+*.o
+*.exe
+*.pdb
+
+# VSCode
+
+.vscode/
+.claude/
+
+# Logs
+
+*.log
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Assets or temp files
+
+*.tmp
+*.bak

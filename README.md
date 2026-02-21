@@ -1,59 +1,136 @@
-# SALSA – Encrypted Tunnel
+# SALSA - Encrypted Tunnel
 
-A secure encrypted tunnel built around **Deimos Cipher**. This repository contains server and client components, a Tunnel Manager, and a GUI to start/stop services and monitor traffic.
+Salsa is a research-focused encrypted tunnel built with a Python control plane and a C++ cipher backend. It includes a VPN-style server and client, an encrypted tunnel manager, SOCKS5 forwarding, and a desktop GUI for operations and monitoring.
 
----
+## Project Scope
 
-## Short Description
+This project currently provides:
 
-Salsa is a lightweight, research-grade encrypted tunnel using the **Deimos Cipher** for transport encryption. It includes a server, client, tunnel manager, and GUI for live traffic monitoring.
+- Encrypted client/server transport using the Deimos cipher DLL.
+- Handshake, session key setup, and per-packet framing.
+- Tunnel management with keepalive and bandwidth stats.
+- Optional SOCKS5 proxy over the encrypted tunnel.
+- GUI workflow for starting/stopping server and client, viewing traffic and logs.
 
-## Features
+## Repository Layout
 
-* Authenticated encryption using Deimos Cipher (Python wrapper for C++ DLL)
-* Server and client CLI with configuration file support
-* Tunnel manager for multiple connections and routing
-* GUI for starting/stopping servers and monitoring traffic
-* Example configuration and scripts included
-* Cross-platform Python + C++ integration
+```text
+src/
+  core.cpp                 C++ cipher core implementation
+  deimos_dll_wrapper.cpp   C exports for Python ctypes
+  deimos_cipher.h          C++ header
+  deimos_cipher.dll        Runtime cipher DLL (loaded by Python)
 
-## Security Warning
+  deimos_wrapper.py        Python ctypes wrapper around DLL
+  protocol.py              Packet framing and message types
+  tunnel_manager.py        Encrypted tunnel state and workers
+  vpn_server.py            Server implementation
+  vpn_client.py            Client implementation
+  socks_proxy.py           Local SOCKS5 proxy over tunnel
+  gui_manager.py           Tkinter GUI
+  config.py                Server config and password hashing
+```
 
-**Do NOT** expose this software to the public internet without a security audit. This repository is for learning and internal research purposes. For production, use well-audited protocols.
+## Requirements
 
-## Getting Started
+- Python 3.10+
+- Windows/Linux/macOS environment that can run Python
+- If rebuilding the DLL: OpenSSL + libsodium development libraries
 
-1. Clone the repository:
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Quick Start
+
+Clone and set up:
 
 ```bash
 git clone https://github.com/MohsinCell/Salsa-Encrypted-Tunnel.git
-cd src
-```
-
-2. Create a virtual environment and install dependencies:
-
-```bash
+cd "Salsa - Encrypted Tunnel"
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
 ```
-3. Start the GUI:
+
+Activate virtual environment:
 
 ```bash
-python gui_manager.py
+# Windows
+.venv\Scripts\activate
+
+# macOS/Linux
+source .venv/bin/activate
 ```
 
-## Development Notes
+Install dependencies:
 
-* Keep the Deimos implementation in `src/deimos_wrapper.py` and the C++ DLLs for compatibility.
-* Tests and example scripts should be added for integration verification.
-* Use `assets/` for GUI or documentation images.
-* Ignore compiled files (`*.dll`, `*.obj`, `*.lib`, `*.exp`) and `__pycache__/` in `.gitignore`.
+```bash
+pip install -r requirements.txt
+```
 
-## Contributing
+Run the GUI:
 
-See `CONTRIBUTING.md` for coding guidelines, tests, and pull request workflow.
+```bash
+python src/gui_manager.py
+```
+
+## CLI Usage
+
+Start server:
+
+```bash
+python src/vpn_server.py
+```
+
+Start client:
+
+```bash
+python src/vpn_client.py
+```
+
+Default local test credentials:
+
+- `testuser / testpass`
+- `admin / admin123`
+
+## SOCKS5 Mode
+
+When the client is connected, you can start SOCKS5 forwarding (GUI or code path) on:
+
+- Host: `127.0.0.1`
+- Port: `1080` (default)
+
+Point browser/tools to that SOCKS endpoint to route traffic through the encrypted tunnel.
+
+## Configuration
+
+Core settings are in `src/config.py` (`SalsaConfig`), including:
+
+- Server bind host/port
+- Max clients and timeout windows
+- Tunnel subnet, DNS, MTU, buffer size
+- SOCKS defaults
+- Auth lockout controls
+
+Passwords are stored as PBKDF2-HMAC-SHA256 hashes with random salt.
+
+## Rebuilding `deimos_cipher.dll` (Optional)
+
+If you need to rebuild the cipher DLL, run from `src/` with your compiler configured for OpenSSL and libsodium.
+
+Example with MinGW g++:
+
+```bash
+g++ -O2 -std=c++17 -shared -o deimos_cipher.dll deimos_dll_wrapper.cpp core.cpp -lsodium -lcrypto -lssl
+```
+
+The Python wrapper (`src/deimos_wrapper.py`) searches for `deimos_cipher.dll` in standard local paths.
+
+## Security Notice
+
+This codebase is intended for internal testing and learning. Do not expose it directly to untrusted public networks without a full security review, hardening, and protocol-level validation.
 
 ## License
 
-MIT License — see `LICENSE` file.
-
+MIT License. See `LICENSE`.
